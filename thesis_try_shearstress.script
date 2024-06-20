@@ -1,0 +1,144 @@
+void main()
+{
+    Map dem = dem.tif; 
+    Map whinitial = soildepth.tif*0.7;
+    Map shinitial = ash_digitized1.tif;
+    Map n= manningsncut_res.tif;
+    
+    //keep track of fluid and solid flow height and impact pressure in map form
+Map fluid_hmax = dem * 0.0;
+Map solid_hmax = dem * 0.0;
+Map fluid_vmax = dem* 0.0; 
+Map solid_vmax = dem* 0.0; 
+Map mixed_vmax = dem* 0.0; 
+Map p_max = dem* 0.0;
+    Map maxwh = dem * 0.0;   
+    Map maxsh = dem * 0.0;
+    Map Fmap = dem * 0.0;
+    Map FMax = dem * 0.0;
+    Map Fmapsolid = dem * 0.0;
+    Map Fmapfluid = dem * 0.0;   
+    Map FMaxsolid = dem * 0.0;
+    Map FMaxfluid = dem * 0.0;
+
+    Print("Get initial maps");
+    array<Map> flowprops = 
+    {whinitial * 0.0 , //initial water height (meter)
+    dem * 0.0, //initial water x-vel (meter/second)
+    dem * 0.0, //initial water y-vel
+    shinitial, //initial solid height //use soil depth only of the shear stress is high enough
+    dem * 0.0, //initial solid x-vel
+    dem * 0.0, //initial solid y-vel
+    shinitial * 0.0 + 0.1, //internal friction angle (radians)
+    shinitial * 0.0 + 0.002, //rocksize (meter)
+    shinitial * 0.0 + 2000.0}; //density of solids in kg/m3
+
+//runoff ratio = 0.2
+//IFA: https://hal.science/hal-03547484/document (basalt-andesite, rock size (1,2,5 mm): https://academic.oup.com/petrology/article/39/10/1721/1564908)
+//lahar boulders up to 5 meters: https://disasterphilanthropy.org/disasters/la-soufriere-volcano-eruption/
+//lahars density: https://www.sciencedirect.com/science/article/pii/S0012825219302302# (1300-2400)
+
+//Region(479754,497447,1.46771e+06,1.48026e+06)
+
+    Print("Add UI Layer");
+    UILayer l = AddViewLayer( dem * 0.0, "water height",true);
+    UILayer l2 = AddViewLayer( dem * 0.0, "solid height",true);
+    //UILayer l3 = AddViewLayer( dem * 0.0, "mix height",true);
+    //UILayer l4 = AddViewLayer( dem * 0.0, "mix velocity (m/s)",true);
+    //UILayer l5 = AddViewLayer( dem * 0.0, "water ss",true);
+    //UILayer l6 = AddViewLayer( dem * 0.0, "solid ss",true);
+
+    float timestep = 1.0; //secs
+
+    for(int i = 0; i < 5000; i++)
+    { 
+        float rainintensity = 0.0; //in mm/hour
+        float time_hours = timestep * float(i)/3600.0;
+        
+        //discharge of water comes in per hour
+        //3 -hours, 50-year return period
+        //average over 3 hours should be 29, peak of a triangular curve should be double that: 58
+        float duration = 3.0;
+        float intensity_avg = 20; //adjust for svt (fastflood design storm)
+       
+        //triangular increasing curve
+        rainintensity = 2.0 * 2.0 * intensity_avg * (time_hours/duration);
+        
+        //after half our event, switch to decreasing curve
+        if(time_hours > duration * 0.5)
+        {
+          //decreasing curve, has the same slope but then negative
+          rainintensity = intensity_avg * 2.0 - intensity_avg *2.0 *2.0 * ((time_hours - duration*0.5)/duration);
+        }
+        if(time_hours > duration)
+        {
+          rainintensity = 0.0;
+        };
+        
+        //convet to meter per second, and multiply by timestep
+        flowprops[0] = flowprops[0] + rainintensity * timestep / 3600000; 
+        flowprops[3] = flowprops[3] + shinitial * timestep / 3600000;
+    
+        flowprops = FlowDebris(dem, n,flowprops[0],flowprops[1],flowprops[2],flowprops[3], flowprops[4], flowprops[5], flowprops[6], flowprops[7], flowprops[8], 100,timestep,0.1);
+
+       //keep track of max fluid and solid height
+fluid_hmax = max(flowprops[0],fluid_hmax);
+solid_hmax = max(flowprops[3],solid_hmax); 
+
+// keep track of max fluid and solid velocity at end of simulation 
+fluid_vmax= max(fluid_vmax,(flowprops[0] * sqrt(flowprops[1] * flowprops[1] + flowprops[2] * flowprops[2]))/max(0.01,flowprops[0]+ flowprops[3]));
+solid_vmax= max(solid_vmax,(flowprops[3] * sqrt(flowprops[4] * flowprops[4] + flowprops[5] * flowprops[5]))/max(0.01,flowprops[0]+ flowprops[3]));
+
+//computing dynamic impact pressure of scenario (kpa)
+Map af = flowprops[0]/(max(0.01,flowprops[0] + flowprops[3])); //fractional fluid velocities 
+Map sf = flowprops[3]/(max(0.01,flowprops[0] + flowprops[3])); //fractional solid velocities
+Map dens_bulk = af * 1000.0 + sf * flowprops[8]; //bulk density calculation
+//Map vel_bulk = (af*1000.0 * sqrt(flowprops[1] *flowprops[1] + flowprops[2] * flowprops[2]) + (sf * flowprops[8]) * sqrt(flowprops[4]*flowprops[4] + flowprops[5]*flowprops[5]))/(dens_bulk); // bulk velocity calculation
+//p_max = max(p_max,0.5* vel_bulk*vel_bulk *dens_bulk * sin(90-atan(Slope(dem)))*sin(90-atan(Slope(dem)))); //dynamic impact pressure 
+
+//shear stress
+//Fmapfluid = max(Fmap, dens_bulk * fluid_hmax * fluid_vmax * fluid_vmax  *9.81 /(n * n * fluid_hmax^(4/3)));
+//FMaxfluid = max(FMax, Fmapfluid);
+//Fmapsolid = max(Fmap, dens_bulk * solid_hmax * solid_vmax * solid_vmax  *9.81 /(n * n * solid_hmax^(4/3)));
+//FMaxsolid = max(FMax, Fmapsolid);
+
+//double F = dens_bulk * fluid_hmax * fluid_vmax * fluid_vmax  *9.81 /(n * n * fluid_hmax^(4/3));
+//double Fmaxfluid = MapMaximumRed(Fmapfluid);
+//double Fmaxsolid = MapMaximumRed(Fmapsolid);
+
+        ReplaceViewLayer(l, flowprops[0]);
+        //ReplaceViewLayer(l2, flowprops[3]);
+        //ReplaceViewLayer(l3, flowprops[0]+ flowprops[3]);
+        //ReplaceViewLayer(l4, (flowprops[0] * sqrt(flowprops[1] * flowprops[1] + flowprops[2] * flowprops[2])+flowprops[3] * sqrt(flowprops[4] * flowprops[4] + flowprops[5] * flowprops[5]))/max(0.01,flowprops[0]+ flowprops[3]));
+        //ReplaceViewLayer(l5, (dens_bulk * fluid_hmax * fluid_vmax * fluid_vmax  *9.81 /(n * n * fluid_hmax^(4/3))));
+        //ReplaceViewLayer(l6, (dens_bulk * solid_hmax * solid_vmax * solid_vmax  *9.81 /(n * n * solid_hmax^(4/3))));
+
+        Print(ToString(i));
+        Print(MapMaximumRed(fluid_hmax));
+        Print(MapMaximumRed(solid_hmax));
+        //Print(Fmaxfluid);
+        //Print(Fmaxsolid);
+        
+        //if(i %1000 == 0)
+        //{
+            //SaveMap(flowprops[0],"wh_" + i + ".tif");
+            //SaveMap(flowprops[0],"sh_" + i + ".tif");
+        //}
+    }
+
+    resultwater.tif = flowprops[0];
+    resultsolid.tif = flowprops[3];
+    //Fmaxfluid.tif=FMaxfluid;
+    //Fmaxsolid.tif=FMaxsolid;
+   
+    
+    //fluid_hmax.tif = fluid_hmax;
+//solid_hmax.tif = soild_hmax; 
+//fluid_vmax.tif = fluid_vmax;
+//solid_vmax.tif = solid_vmax; 
+//mixed_vmax.tif = mixed_vmax; 
+//p_impact.tif = p_max; 
+}
+
+//water height from storm design added in the middle of the simulation
+//solid height added from shear stress
